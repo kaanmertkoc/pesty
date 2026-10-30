@@ -54,15 +54,18 @@ final class ClipboardStore {
         set { Settings.shared.historyLimit = newValue; trimHistory() }
     }
 
+    private let persistence: LocalStorePersistence
+    private(set) var persistenceError: String?
+    private var canSave = true
+    @ObservationIgnored private var imageSizes: [String: Int] = [:]
+    @ObservationIgnored private var pendingImageDeletions: Set<String> = []
+
     private var storeURL: URL
     private var imagesDir: URL
     private var baseDir: URL
     private var saveWorkItem: DispatchWorkItem?
 
-    private var fileWatch: DispatchSourceFileSystemObject?
-    private var ignoreWatchUntil: Date = .distantPast
-
-    static var localBase: URL {
+    nonisolated static var localBase: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Pesty", isDirectory: true)
     }
@@ -71,28 +74,34 @@ final class ClipboardStore {
         ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
     }
 
-    static var iCloudBase: URL? {
-        guard !isSandboxed else { return nil }
-        let p = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: p.path) else { return nil }
-        return p.appendingPathComponent("Pesty", isDirectory: true)
-    }
-
-    var iCloudAvailable: Bool { ClipboardStore.iCloudBase != nil }
-
     /// The on-disk store root (history JSON plus saved images), exposed so
     /// Settings can report how much space history actually uses.
     var dataDirectory: URL { baseDir }
 
-    private init() {
-        let base = (Settings.shared.iCloudSync ? ClipboardStore.iCloudBase : nil) ?? ClipboardStore.localBase
+    init(baseDirectory: URL = ClipboardStore.localBase) {
+        let base = baseDirectory
         baseDir = base
         imagesDir = base.appendingPathComponent("images", isDirectory: true)
         storeURL = base.appendingPathComponent("store.json")
+        persistence = LocalStorePersistence(url: base.appendingPathComponent("store.json"))
         prepareDirectories()
         load()
-        if Settings.shared.iCloudSync { startWatching() }
+        persistence.didSave = { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.persistenceError = error
+                if error == nil {
+                    self.purgeDeletedImages()
+                    NotificationCenter.default.post(name: .pestyStoreDidSave, object: nil)
+                }
+            }
+        }
+        if canSave {
+            let previousCount = history.count
+            trimHistory()
+            if history.count != previousCount { saveNow() }
+            if persistenceError == nil { removeOrphanedImages() }
+        }
     }
 
     private func prepareDirectories() {
@@ -121,6 +130,7 @@ final class ClipboardStore {
     }
 
     func addCaptured(_ item: ClipItem) {
+        guard canSave else { deleteImageFile(item); return }
         if let idx = history.firstIndex(where: { $0.sameContent(as: item) }) {
             if item.imageFileName != history[idx].imageFileName { deleteImageFile(item) }
             var existing = history.remove(at: idx)
@@ -174,54 +184,36 @@ final class ClipboardStore {
         }
     }
 
-    private static let timeRetentionSafetyCap = 5000
+    private static let timeRetentionSafetyCap = ClipResourceLimits.maximumHistoryCount
 
     private static func retentionCutoff(daysAgo days: Int) -> Date? {
         guard days > 0 else { return nil }
         return Date().addingTimeInterval(-TimeInterval(days) * 86_400)
     }
 
-    private(set) var retentionPrunedRecordNames: Set<String> = []
-
-    func isRetentionPruned(_ recordName: String) -> Bool {
-        retentionPrunedRecordNames.contains(recordName)
-    }
-
     private func trimHistory() {
-        var removed: [ClipItem] = []
-        switch Settings.shared.historyRetentionMode {
-        case .itemCount:
-            if history.count > historyLimit {
-                removed = Array(history[historyLimit...])
-                history.removeLast(history.count - historyLimit)
-            }
-        case .timeInterval:
-            // days == 0 means "forever" - skip the age cutoff, keep the safety cap.
-            if let cutoff = Self.retentionCutoff(daysAgo: Settings.shared.historyRetentionDays) {
-                let old = history.filter { $0.createdAt < cutoff }
-                if !old.isEmpty {
-                    removed += old
-                    history.removeAll { $0.createdAt < cutoff }
-                }
-            }
-            if history.count > Self.timeRetentionSafetyCap {
-                removed += Array(history[Self.timeRetentionSafetyCap...])
-                history.removeLast(history.count - Self.timeRetentionSafetyCap)
-            }
-        }
+        let settings = Settings.shared
+        let countLimit = settings.historyRetentionMode == .itemCount
+            ? historyLimit : Self.timeRetentionSafetyCap
+        let cutoff = settings.historyRetentionMode == .timeInterval
+            ? Self.retentionCutoff(daysAgo: settings.historyRetentionDays) : nil
+        let retained = ClipResourceLimits.retainedHistory(history, countLimit: countLimit,
+                                                          cutoff: cutoff, imageSize: imageSize)
+        let ids = Set(retained.map(\.id))
+        let removed = history.filter { !ids.contains($0.id) }
         guard !removed.isEmpty else { return }
+        history = retained
         for item in removed { deleteImageFile(item) }
-        markRetentionPruned(removed)
-        if let sel = selectedID, removed.contains(where: { $0.id == sel }) { selectFirst() }
+        if let sel = selectedID, !ids.contains(sel) { selectFirst() }
         reconcileMultiSelection()
     }
 
-    private func markRetentionPruned(_ items: [ClipItem]) {
-        let names = items.map { $0.id.uuidString }
-        retentionPrunedRecordNames.formUnion(names)
-        #if MAS
-        CloudSyncService.shared.retainRemoteRecords(named: names)
-        #endif
+    private func imageSize(_ item: ClipItem) -> Int {
+        guard let name = item.imageFileName, let url = imageURL(for: item) else { return 0 }
+        if let size = imageSizes[name] { return size }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        imageSizes[name] = size
+        return size
     }
 
     /// Deletes a clip from the collection currently on screen only. A Pinboard
@@ -257,7 +249,9 @@ final class ClipboardStore {
         if permanently || Settings.shared.deletePermanently {
             for placement in placements { deleteImageFile(placement.item) }
         } else {
-            undoStack.push(placements, at: Date())
+            for deletion in undoStack.push(placements, at: Date(), imageSize: imageSize) {
+                for placement in deletion.placements { deleteImageFile(placement.item) }
+            }
             refreshUndoState()
         }
         multiSelectedIDs.subtract(ids)
@@ -317,6 +311,7 @@ final class ClipboardStore {
             }
         }
         refreshUndoState()
+        trimHistory()
         if let id = restored.first(where: { id in visibleItems.contains(where: { $0.id == id }) }) {
             selectedID = id
             selectionAnchorID = id
@@ -326,8 +321,7 @@ final class ClipboardStore {
         return true
     }
 
-    /// A clip that came back by other means in the meantime (copied again,
-    /// or synced in) is left as it is rather than doubled.
+    /// A clip copied again in the meantime is left as it is rather than doubled.
     private func restore(_ placement: ClipPlacement, into items: inout [ClipItem]) -> Bool {
         let item = placement.item
         if items.contains(where: { $0.id == item.id || $0.sameContent(as: item) }) {
@@ -400,7 +394,7 @@ final class ClipboardStore {
     }
 
     /// A copy with its own UUID and its own image file, so no two containers
-    /// ever share an identity (one sync record per container) or a file.
+    /// ever share an identity or a file.
     private func independentCopy(of item: ClipItem, createdAt: Date) -> ClipItem {
         var copy = ClipItem(
             type: item.type,
@@ -427,7 +421,9 @@ final class ClipboardStore {
     @discardableResult
     func updateTextContent(_ text: String, richTextData: Data? = nil, for item: ClipItem) -> Bool {
         guard [.text, .richText, .link].contains(item.type),
+              ClipResourceLimits.acceptsText(text),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let richTextData = ClipResourceLimits.boundedRTF(richTextData)
         let type: ClipType = richTextData != nil ? .richText : (isWebLink(text) ? .link : .text)
         return updateContent(of: item) { existing in
             var updated = existing
@@ -482,7 +478,7 @@ final class ClipboardStore {
         }
 
         guard changed else { return false }
-        retentionPrunedRecordNames.remove(item.id.uuidString)
+        trimHistory()
         if selectedItem == nil { selectFirst() }
         reconcileMultiSelection()
         scheduleSave()
@@ -607,7 +603,9 @@ final class ClipboardStore {
     }
 
     func imageURL(for item: ClipItem) -> URL? {
-        guard let name = item.imageFileName else { return nil }
+        guard let name = item.imageFileName,
+              name == URL(fileURLWithPath: name).lastPathComponent,
+              name.hasSuffix(".png") else { return nil }
         return imagesDir.appendingPathComponent(name)
     }
 
@@ -617,11 +615,13 @@ final class ClipboardStore {
     }
 
     func storeImageData(_ data: Data) -> String? {
+        guard canSave, ClipResourceLimits.acceptsImage(data) else { return nil }
         let name = "\(UUID().uuidString).png"
         let url = imagesDir.appendingPathComponent(name)
         do {
             try data.write(to: url, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            imageSizes[name] = data.count
             return name
         } catch { return nil }
     }
@@ -644,188 +644,75 @@ final class ClipboardStore {
             || pinboards.contains { $0.items.contains { $0.imageFileName == name } }
             || undoStack.retainsImageFile(named: name)
         if stillUsed { return }
-        if let url = imageURL(for: item) { try? FileManager.default.removeItem(at: url) }
+        pendingImageDeletions.insert(name)
+        // Do not delete an image still referenced by the committed JSON or
+        // an in-flight write. A crash during the debounce must not break it.
+        guard !persistence.retainsImage(named: name), let url = imageURL(for: item) else { return }
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            imageSizes.removeValue(forKey: name)
+            pendingImageDeletions.remove(name)
+        } catch { /* Retry after the next successful save. */ }
     }
 
-    private struct Snapshot: Codable {
-        var history: [ClipItem]
-        var pinboards: [Pinboard]
+    private func purgeDeletedImages() {
+        for name in pendingImageDeletions {
+            deleteImageFile(ClipItem(type: .image, imageFileName: name))
+        }
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL),
-              let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
-        history = snap.history
-        pinboards = snap.pinboards
-        selectFirst()
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
+        do {
+            let size = try storeURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= ClipResourceLimits.maximumStoreBytes else {
+                throw CocoaError(.fileReadTooLarge)
+            }
+            let data = try Data(contentsOf: storeURL)
+            let snapshot = try JSONDecoder().decode(ClipboardSnapshot.self, from: data)
+            history = snapshot.history
+            pinboards = snapshot.pinboards
+            persistence.preserveImages(in: snapshot)
+            selectFirst()
+        } catch {
+            // A failed decode must never turn an existing history into an empty
+            // file on the next capture or quit. Leave it available for recovery.
+            canSave = false
+            persistenceError = "Saved history could not be read. The original file is preserved at \(storeURL.path). Quit Pesty and move that file aside to start fresh."
+        }
+    }
+
+    private func removeOrphanedImages() {
+        let names = Set((history + pinboards.flatMap(\.items)).compactMap(\.imageFileName))
+        guard let files = try? FileManager.default.contentsOfDirectory(at: imagesDir,
+                                    includingPropertiesForKeys: nil) else { return }
+        for file in files where file.pathExtension == "png" && !names.contains(file.lastPathComponent) {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     private func scheduleSave() {
+        guard canSave else { return }
         saveWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.saveNow() }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.persistence.enqueue(ClipboardSnapshot(history: self.history, pinboards: self.pinboards))
+        }
         saveWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
+    /// Used at shutdown and in tests to wait for the newest snapshot on disk.
     func saveNow() {
-        let snap = Snapshot(history: history, pinboards: pinboards)
-        guard let data = try? JSONEncoder().encode(snap) else { return }
-        ignoreWatchUntil = Date().addingTimeInterval(1.5)
-        try? data.write(to: storeURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storeURL.path)
-        NotificationCenter.default.post(name: .pestyStoreDidSave, object: nil)
-    }
-
-    // MARK: - Remote (CloudKit) apply
-
-    /// Applies decoded CloudKit clips. Dedupe by contentKey keeps the newer
-    /// createdAt; insertion stays newest-first. Callers update their own
-    /// last-synced bookkeeping so these changes do not loop back into sync.
-    func applyRemote(clips: [(ClipItem, container: String, imageSourceURL: URL?)]) {
-        guard !clips.isEmpty else { return }
-        for entry in clips {
-            let item = entry.0
-            // The per-app exclusion list is local to each Mac and is not synced, so a
-            // clip from an ignored app copied on another device would otherwise arrive
-            // here and land in history anyway. A privacy filter that leaks across
-            // devices is not a privacy filter.
-            guard !Settings.shared.isIgnoringSourceApp(item.sourceBundleID) else { continue }
-            if let src = entry.imageSourceURL, let name = item.imageFileName {
-                let dst = imagesDir.appendingPathComponent(name)
-                try? FileManager.default.removeItem(at: dst)
-                try? FileManager.default.copyItem(at: src, to: dst)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
-            }
-            if entry.container == "history" {
-                applyRemoteToHistory(item)
-            } else if let boardID = UUID(uuidString: entry.container) {
-                applyRemoteToPinboard(item, boardID: boardID)
-            }
-        }
-        trimHistory()
-        if selectedID == nil { selectFirst() }
-        reconcileMultiSelection()
-        scheduleSave()
-    }
-
-    func applyRemoteDeletes(ids: [UUID]) {
-        guard !ids.isEmpty else { return }
-        let set = Set(ids)
-        let removedHistory = history.filter { set.contains($0.id) }
-        history.removeAll { set.contains($0.id) }
-        var removedPinned: [ClipItem] = []
-        for i in pinboards.indices {
-            removedPinned += pinboards[i].items.filter { set.contains($0.id) }
-            pinboards[i].items.removeAll { set.contains($0.id) }
-        }
-        let removedBoards = pinboards.filter { set.contains($0.id) }
-        pinboards.removeAll { set.contains($0.id) }
-        if case .pinboard(let cur) = source, set.contains(cur) { source = .history }
-        for item in removedHistory + removedPinned + removedBoards.flatMap(\.items) {
-            deleteImageFile(item)
-        }
-        if let sel = selectedID, set.contains(sel) { selectFirst() }
-        reconcileMultiSelection()
-        scheduleSave()
-    }
-
-    /// Upserts pinboard name/color only; item membership syncs through clip records.
-    func applyRemote(pinboards boards: [Pinboard]) {
-        guard !boards.isEmpty else { return }
-        for b in boards {
-            if let i = pinboards.firstIndex(where: { $0.id == b.id }) {
-                pinboards[i].name = b.name
-                pinboards[i].colorHex = b.colorHex
-            } else {
-                pinboards.append(Pinboard(id: b.id, name: b.name, colorHex: b.colorHex, items: []))
-            }
-        }
-        scheduleSave()
-    }
-
-    private func applyRemoteToHistory(_ item: ClipItem) {
-        let replaced = history.filter { $0.id == item.id }
-        history.removeAll { $0.id == item.id }
-        let key = contentKey(item)
-        if let dupIdx = history.firstIndex(where: { contentKey($0) == key }) {
-            let dup = history[dupIdx]
-            if dup.createdAt >= item.createdAt {
-                deleteImageFile(item)
-                for old in replaced { deleteImageFile(old) }
-                return
-            }
-            history.remove(at: dupIdx)
-            deleteImageFile(dup)
-        }
-        insertSortedByDate(item, into: &history)
-        retentionPrunedRecordNames.remove(item.id.uuidString)
-        // Same-id replace: drop the old image file unless something still uses it.
-        for old in replaced { deleteImageFile(old) }
-    }
-
-    private func applyRemoteToPinboard(_ item: ClipItem, boardID: UUID) {
-        // Placeholder board if the clip record arrives before its Pinboard record.
-        if !pinboards.contains(where: { $0.id == boardID }) {
-            pinboards.append(Pinboard(id: boardID, name: "Pinboard", items: []))
-        }
-        guard let i = pinboards.firstIndex(where: { $0.id == boardID }) else { return }
-        // Legacy shared-id records: a pinboard clip also evicts the same id from history.
-        var replaced = history.filter { $0.id == item.id }
-        history.removeAll { $0.id == item.id }
-        replaced += pinboards[i].items.filter { $0.id == item.id }
-        pinboards[i].items.removeAll { $0.id == item.id }
-        let key = contentKey(item)
-        if let dupIdx = pinboards[i].items.firstIndex(where: { contentKey($0) == key }) {
-            let dup = pinboards[i].items[dupIdx]
-            if dup.createdAt >= item.createdAt {
-                deleteImageFile(item)
-                for old in replaced { deleteImageFile(old) }
-                return
-            }
-            pinboards[i].items.remove(at: dupIdx)
-            deleteImageFile(dup)
-        }
-        insertSortedByDate(item, into: &pinboards[i].items)
-        retentionPrunedRecordNames.remove(item.id.uuidString)
-        // Same-id replace: drop the old image file unless something still uses it.
-        for old in replaced { deleteImageFile(old) }
-    }
-
-    private func insertSortedByDate(_ item: ClipItem, into items: inout [ClipItem]) {
-        let idx = items.firstIndex(where: { $0.createdAt < item.createdAt }) ?? items.endIndex
-        items.insert(item, at: idx)
-    }
-
-    func setICloudSync(_ enabled: Bool) {
-        stopWatching()
-        let target = (enabled ? ClipboardStore.iCloudBase : ClipboardStore.localBase) ?? ClipboardStore.localBase
-        let newImages = target.appendingPathComponent("images", isDirectory: true)
-        let newStore = target.appendingPathComponent("store.json")
-        let fm = FileManager.default
-        try? fm.createDirectory(at: newImages, withIntermediateDirectories: true,
-                                attributes: [.posixPermissions: 0o700])
-
-        if fm.fileExists(atPath: newStore.path),
-           let data = try? Data(contentsOf: newStore),
-           let snap = try? JSONDecoder().decode(Snapshot.self, from: data) {
-            copyImages(from: imagesDir, to: newImages)
-            baseDir = target; imagesDir = newImages; storeURL = newStore
-            mergeExternal(snap)
-        } else {
-            copyImages(from: imagesDir, to: newImages)
-            baseDir = target; imagesDir = newImages; storeURL = newStore
-            saveNow()
-        }
-        prepareDirectories()
-        if enabled { startWatching() }
-    }
-
-    private func copyImages(from src: URL, to dst: URL) {
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: nil) else { return }
-        for f in files where f.pathExtension == "png" {
-            let target = dst.appendingPathComponent(f.lastPathComponent)
-            if !fm.fileExists(atPath: target.path) { try? fm.copyItem(at: f, to: target) }
+        guard canSave else { return }
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
+        persistenceError = persistence.flush(ClipboardSnapshot(history: history, pinboards: pinboards))
+        if persistenceError == nil {
+            purgeDeletedImages()
+            NotificationCenter.default.post(name: .pestyStoreDidSave, object: nil)
         }
     }
 
@@ -838,56 +725,4 @@ final class ClipboardStore {
         }
     }
 
-    private func mergeExternal(_ snap: Snapshot) {
-        let before = history.count
-        var combined = (history + snap.history).sorted { $0.createdAt > $1.createdAt }
-        var seen = Set<String>()
-        var merged: [ClipItem] = []
-        for it in combined where seen.insert(contentKey(it)).inserted { merged.append(it) }
-        history = merged
-        trimHistory()
-
-        var byID: [UUID: Pinboard] = Dictionary(uniqueKeysWithValues: pinboards.map { ($0.id, $0) })
-        for b in snap.pinboards {
-            if var existing = byID[b.id] {
-                for it in b.items where !existing.items.contains(where: { $0.sameContent(as: it) }) {
-                    existing.items.append(it)
-                }
-                byID[b.id] = existing
-            } else {
-                byID[b.id] = b
-            }
-        }
-        pinboards = pinboards.map { byID[$0.id] ?? $0 }
-            + byID.values.filter { b in !pinboards.contains(where: { $0.id == b.id }) }
-
-        combined.removeAll()
-        selectFirst()
-        if history.count != before || !snap.history.isEmpty { saveNow() }
-    }
-
-    private func startWatching() {
-        stopWatching()
-        let fd = open(storeURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-        let src = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
-        src.setEventHandler { [weak self] in
-            guard let self else { return }
-            if Date() < self.ignoreWatchUntil { return }
-            if let data = try? Data(contentsOf: self.storeURL),
-               let snap = try? JSONDecoder().decode(Snapshot.self, from: data) {
-                self.mergeExternal(snap)
-            }
-            self.startWatching()
-        }
-        src.setCancelHandler { close(fd) }
-        src.resume()
-        fileWatch = src
-    }
-
-    private func stopWatching() {
-        fileWatch?.cancel()
-        fileWatch = nil
-    }
 }

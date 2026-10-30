@@ -2,11 +2,13 @@ import AppKit
 import Carbon.HIToolbox
 
 /// How a clip's content is written to the pasteboard when pasting.
-enum PasteFormat {
+enum PasteFormat: Equatable {
     /// The clip exactly as captured.
     case original
     /// Text only, all formatting removed.
     case plainText
+    /// A local file path as text, including Pesty's stored PNG for image clips.
+    case filePath
     /// Bold, italic, underline, and links survive; fonts, sizes, and colors
     /// are normalized away.
     case cleanFormatting
@@ -24,18 +26,43 @@ enum PasteService {
         pasteboard.setString(source, forType: sourceType)
     }
 
+    static func defaultCopyFormat(for item: ClipItem) -> PasteFormat {
+        item.canCopyPath ? .filePath : .original
+    }
+
+    private static func pathText(for item: ClipItem, store: ClipboardStore?) -> String? {
+        switch item.type {
+        case .image:
+            guard let url = (store ?? .shared).imageURL(for: item),
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+            return url.path
+        case .file:
+            // Only inspect the URL string. A copied file may live on a cloud
+            // provider or network volume; copying its path must not open it.
+            let paths = item.fileURLs.compactMap(URL.init(string:)).filter(\.isFileURL).map(\.path)
+            return paths.isEmpty ? nil : paths.joined(separator: "\n")
+        default:
+            return nil
+        }
+    }
+
     @discardableResult
     static func copy(_ item: ClipItem,
-                     format: PasteFormat = .original,
-                     to pasteboard: NSPasteboard = .general) -> Int {
+                     format: PasteFormat? = nil,
+                     to pasteboard: NSPasteboard = .general,
+                     store: ClipboardStore? = nil) -> Int {
+        let format = format ?? defaultCopyFormat(for: item)
         switch format {
-        case .plainText:
-            if let text = item.plainText {
-                pasteboard.clearContents()
-                pasteboard.setString(text, forType: .string)
-                markSource(of: item, on: pasteboard)
-                return pasteboard.changeCount
-            }
+        case .plainText, .filePath:
+            let text = format == .filePath || item.type == .image
+                ? pathText(for: item, store: store) : item.plainText
+            // Resolve the path before clearing the clipboard. Never replace it
+            // with a nonexistent image path or fall through to image bytes.
+            guard let text else { return pasteboard.changeCount }
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            markSource(of: item, on: pasteboard)
+            return pasteboard.changeCount
         case .cleanFormatting:
             if let rtf = FormatConverter.cleanedRTF(for: item) {
                 pasteboard.clearContents()
@@ -46,7 +73,7 @@ enum PasteService {
             }
             // No rich source to clean: plain text is the honest result.
             if item.plainText != nil {
-                return copy(item, format: .plainText, to: pasteboard)
+                return copy(item, format: .plainText, to: pasteboard, store: store)
             }
         case .markdown:
             if let markdown = FormatConverter.markdown(for: item) {
@@ -56,17 +83,18 @@ enum PasteService {
                 return pasteboard.changeCount
             }
             if item.plainText != nil {
-                return copy(item, format: .plainText, to: pasteboard)
+                return copy(item, format: .plainText, to: pasteboard, store: store)
             }
         case .original:
             break
         }
         if item.type == .image {
-            guard let img = ClipboardStore.shared.loadImage(for: item) else {
+            guard let url = (store ?? .shared).imageURL(for: item),
+                  let data = try? Data(contentsOf: url) else {
                 return pasteboard.changeCount
             }
             pasteboard.clearContents()
-            pasteboard.writeObjects([img])
+            pasteboard.setData(data, forType: .png)
             markSource(of: item, on: pasteboard)
             return pasteboard.changeCount
         }
@@ -75,9 +103,9 @@ enum PasteService {
         case .image:
             break
         case .file:
-            let urls = item.fileURLs.compactMap { URL(string: $0) }
+            let urls = item.fileURLs.compactMap(URL.init(string:)).filter(\.isFileURL)
             if !urls.isEmpty { pasteboard.writeObjects(urls as [NSURL]) }
-            if let t = item.text { pasteboard.setString(t, forType: .string) }
+            if let paths = pathText(for: item, store: store) { pasteboard.setString(paths, forType: .string) }
         case .color:
             if let hex = item.colorHex, let c = NSColor(hex: hex) {
                 pasteboard.writeObjects([c])
@@ -96,8 +124,18 @@ enum PasteService {
     static func paste(_ item: ClipItem,
                       into targetApp: NSRunningApplication?,
                       monitor: ClipboardMonitor,
-                      format: PasteFormat = .original) {
-        let change = copy(item, format: format)
+                      format: PasteFormat? = nil,
+                      to pasteboard: NSPasteboard = .general,
+                      store: ClipboardStore? = nil) {
+        // Keyboard shortcuts, Return, and double-click share Copy's default:
+        // image/file paths as text. Original pixels/files require an explicit
+        // .original action; ordinary text keeps its original formatting.
+        let previousChange = pasteboard.changeCount
+        let change = copy(item, format: format, to: pasteboard, store: store)
+        guard change != previousChange else {
+            AppController.shared.noteUnavailableClip()
+            return
+        }
         monitor.suppressUntilChangeCount = change
         if Settings.shared.playSound { NSSound(named: "Pop")?.play() }
 

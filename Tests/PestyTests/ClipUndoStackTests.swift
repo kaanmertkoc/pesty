@@ -61,4 +61,26 @@ final class ClipUndoStackTests: XCTestCase {
         XCTAssertEqual(gone.restorationIndex(in: []), 0)
         XCTAssertEqual(placement(b, index: 7).restorationIndex(in: [a, c]), 2)
     }
+    func testUndoEvictsOldestOperationsAtCountLimit() {
+        var stack = ClipUndoStack()
+        let items = (0..<101).map { ClipItem(type: .text, text: "\($0)") }
+        var evicted: [ClipDeletion] = []
+        for (index, item) in items.enumerated() {
+            evicted += stack.push([placement(item, index: index)], at: start)
+        }
+        XCTAssertEqual(evicted.flatMap(\.placements).map(\.item.id), [items[0].id])
+        XCTAssertEqual(stack.deletions.count, 100)
+        XCTAssertEqual(stack.pop(at: start)?.placements.first?.item.id, items.last?.id)
+    }
+
+    func testOversizedUndoBatchIsNotPartiallyRetained() {
+        var stack = ClipUndoStack()
+        let item = ClipItem(type: .image, imageFileName: "large.png")
+        let removed = stack.push([placement(item, index: 0)], at: start,
+                                 imageSize: { _ in ClipUndoStack.maximumBytes + 1 })
+        XCTAssertEqual(removed.count, 1)
+        XCTAssertTrue(stack.isEmpty)
+        XCTAssertFalse(stack.retainsImageFile(named: "large.png"))
+    }
+
 }

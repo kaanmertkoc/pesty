@@ -22,10 +22,11 @@ struct ClipPlacement {
 struct ClipDeletion {
     let placements: [ClipPlacement]
     let deletedAt: Date
+    let retainedBytes: Int
 }
 
 /// The deletions still open for Undo. Memory only: deleted content is never
-/// written back to store.json, and nothing here reaches sync. Entries are
+/// written back to store.json. Entries are
 /// pushed in time order, so the last one is the newest and the first one
 /// expires first.
 struct ClipUndoStack {
@@ -39,9 +40,29 @@ struct ClipUndoStack {
         deletions.first.map { $0.deletedAt.addingTimeInterval(Self.window) }
     }
 
-    mutating func push(_ placements: [ClipPlacement], at date: Date) {
-        guard !placements.isEmpty else { return }
-        deletions.append(ClipDeletion(placements: placements, deletedAt: date))
+    static let maximumPlacements = 100
+    static let maximumBytes = 32 * 1024 * 1024
+
+    /// Evict whole operations, including an oversized newest batch, so an Undo
+    /// never unexpectedly restores only part of a bulk deletion.
+    @discardableResult
+    mutating func push(_ placements: [ClipPlacement], at date: Date,
+                       imageSize: (ClipItem) -> Int = { _ in 0 }) -> [ClipDeletion] {
+        guard !placements.isEmpty else { return [] }
+        let bytes = placements.reduce(0) {
+            $0 + ClipResourceLimits.payloadBytes(of: $1.item) + imageSize($1.item)
+        }
+        deletions.append(ClipDeletion(placements: placements, deletedAt: date, retainedBytes: bytes))
+        var removed: [ClipDeletion] = []
+        var count = deletions.reduce(0) { $0 + $1.placements.count }
+        var total = deletions.reduce(0) { $0 + $1.retainedBytes }
+        while count > Self.maximumPlacements || total > Self.maximumBytes {
+            let deletion = deletions.removeFirst()
+            removed.append(deletion)
+            count -= deletion.placements.count
+            total -= deletion.retainedBytes
+        }
+        return removed
     }
 
     /// The newest deletion, if its window is still open.

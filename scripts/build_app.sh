@@ -6,10 +6,18 @@ VERSION="${VERSION:-1.0.0}"
 BUILD="${BUILD:-1}"
 APP="packaging/Pesty.app"
 
-echo "==> Building universal release binary (arm64 + x86_64)"
-swift build -c release --arch arm64 --arch x86_64
+ARCH="${ARCH:-universal}"
+case "$ARCH" in
+  native) ARCH_ARGS=(--arch "$(uname -m)") ;;
+  arm64|x86_64) ARCH_ARGS=(--arch "$ARCH") ;;
+  universal) ARCH_ARGS=(--arch arm64 --arch x86_64) ;;
+  *) echo "ARCH must be native, arm64, x86_64, or universal" >&2; exit 1 ;;
+esac
 
-BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/Pesty"
+echo "==> Building release binary ($ARCH)"
+swift build -c release "${ARCH_ARGS[@]}"
+
+BIN="$(swift build -c release "${ARCH_ARGS[@]}" --show-bin-path)/Pesty"
 echo "    binary: $BIN"
 
 echo "==> Generating icon"

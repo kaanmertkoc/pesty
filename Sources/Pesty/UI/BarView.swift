@@ -53,14 +53,6 @@ struct BarView: View {
 
     private var topBar: some View {
         HStack(spacing: 14) {
-            // The two builds sync through different systems: the App Store build uses
-            // CloudKit, everything else uses iCloud Drive. Gate the button on whichever
-            // one this build actually drives.
-            #if MAS
-            if settings.cloudKitSync { syncButton }
-            #else
-            if settings.iCloudSync { syncButton }
-            #endif
             searchIndicator
             PinboardTabs()
                 .layoutPriority(1)
@@ -75,18 +67,6 @@ struct BarView: View {
         }
         .padding(.horizontal, 18)
         .frame(height: 56)
-    }
-
-    private var syncButton: some View {
-        Button {
-            AppController.shared.toggleICloudSync()
-        } label: {
-            Image(systemName: settings.iCloudSync ? "checkmark.icloud.fill" : "arrow.triangle.2.circlepath")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(settings.iCloudSync ? Theme.selection : Theme.chromeTextSecondary)
-        }
-        .buttonStyle(.plain)
-        .help(settings.iCloudSync ? "iCloud sync on" : "Turn on iCloud sync")
     }
 
     private var searchIndicator: some View {
@@ -165,7 +145,7 @@ struct BarView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .fixedSize()
-        .help("Undo the last deletion (⌘Z), available for 5 minutes")
+        .help("Undo the last deletion (⌘Z), available for up to 5 minutes within the Undo limit")
         .accessibilityLabel("Undo last deletion")
     }
 

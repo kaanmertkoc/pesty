@@ -57,12 +57,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if Settings.shared.launchAtLogin { LaunchAtLogin.set(enabled: true) }
 
-        #if MAS
-        // CKSyncEngine handles the push payloads itself; the app only registers.
-        NSApplication.shared.registerForRemoteNotifications()
-        if Settings.shared.cloudKitSync { CloudSyncService.shared.start() }
-        #endif
-
         if CommandLine.arguments.contains("--demo") {
             store.seedDemo()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -71,7 +65,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
-        if !Settings.shared.onboarded {
+        if !Settings.shared.onboarded || store.persistenceError != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.showSettings()
             }
@@ -228,19 +222,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ])
     }
 
-    func toggleICloudSync() {
-        let enabling = !Settings.shared.iCloudSync
-        if enabling && !ClipboardStore.shared.iCloudAvailable {
-            let alert = NSAlert()
-            alert.messageText = "iCloud Drive Unavailable"
-            alert.informativeText = "Sign in to iCloud and enable iCloud Drive in System Settings to sync your clipboard across your Macs."
-            alert.runModal()
-            return
-        }
-        Settings.shared.iCloudSync = enabling
-        ClipboardStore.shared.setICloudSync(enabling)
-    }
-
     func beginBarResize(at screenPoint: NSPoint) {
         barController?.beginBarResize(at: screenPoint)
     }
@@ -380,7 +361,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return app.bundleIdentifier == bundleID
     }
 
-    func pasteItem(_ item: ClipItem, format: PasteFormat = .original) {
+    func pasteItem(_ item: ClipItem, format: PasteFormat? = nil) {
         let target = pasteTarget
         hideBar()
         let previousChange = NSPasteboard.general.changeCount
@@ -403,15 +384,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     #endif
 
-    func copyItem(_ item: ClipItem) {
+    func noteUnavailableClip() {
+        copyToast.show(message: "Could not copy this clip. Its file may have been removed.",
+                       symbol: "exclamationmark.triangle.fill", linger: 4)
+    }
+
+    func copyItem(_ item: ClipItem, format: PasteFormat? = nil) {
+        let format = format ?? PasteService.defaultCopyFormat(for: item)
         let previousChange = NSPasteboard.general.changeCount
-        let change = PasteService.copy(item)
+        let change = PasteService.copy(item, format: format)
         monitor.suppressUntilChangeCount = change
         // PasteService.copy leaves the pasteboard alone when an image file is
         // missing; neither the promotion nor the toast should claim otherwise.
         if change != previousChange {
             store.promoteCopiedItem(item)
-            copyToast.show()
+            copyToast.show(message: format == .filePath ? "Path Copied to Clipboard" : "Copied to Clipboard")
+        } else {
+            noteUnavailableClip()
         }
         // Tink, not Pop: copy and paste stay audibly distinct.
         if Settings.shared.playSoundOnCopy { NSSound(named: "Tink")?.play() }
@@ -431,11 +420,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return "Paste to \(name)"
     }
 
-    func editItem(_ item: ClipItem, launchWritingTools: Bool = false) {
+    func editItem(_ item: ClipItem) {
         suppressAutoHide = true
         defer { suppressAutoHide = false }
 
-        guard let edit = ClipEditor.run(for: item, launchWritingTools: launchWritingTools) else { return }
+        guard let edit = ClipEditor.run(for: item) else { return }
 
         let changed: Bool
         switch edit {
@@ -513,15 +502,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let alert = NSAlert()
         alert.messageText = "Delete \(targets.count) Clips?"
         let noUndo = permanently || Settings.shared.deletePermanently
-        #if MAS
-        alert.informativeText = noUndo
-            ? "This cannot be undone. When iCloud sync is on, these clips are also removed from your other devices."
-            : "You can undo this with ⌘Z for the next 5 minutes. When iCloud sync is on, these clips are also removed from your other devices."
-        #else
         alert.informativeText = noUndo
             ? "This cannot be undone."
-            : "You can undo this with ⌘Z for the next 5 minutes."
-        #endif
+            : "You can undo this with ⌘Z for up to 5 minutes, within the 100-clip / 32 MiB Undo limit."
+
         let confirm = alert.addButton(withTitle: "Delete \(targets.count) Clips")
         confirm.hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
@@ -611,7 +595,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if digit <= items.count {
                 let plain = includes(Settings.shared.plainTextModifier, in: flags)
                     && Settings.shared.plainTextModifier != Settings.shared.quickPasteModifier
-                pasteItem(items[digit - 1], format: plain ? .plainText : .original)
+                pasteItem(items[digit - 1], format: plain ? .plainText : nil)
             }
             return nil
         }
@@ -668,8 +652,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // deleting clips at the key-repeat rate - and a short cooldown
             // after the search empties separates "clear the query" from
             // "delete a clip". Command-Z brings a deleted clip back for five
-            // minutes unless Option was held, and deletions replicate to
-            // other devices when sync is on.
+            // minutes unless Option was held, within the Undo memory limit.
             if !event.isARepeat,
                Date().timeIntervalSince(searchClearedAt) > Self.deleteAfterSearchClearCooldown {
                 deleteEffectiveSelection(permanently: opt)

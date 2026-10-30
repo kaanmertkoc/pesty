@@ -3,7 +3,7 @@ import SwiftUI
 struct ClipPreviewView: View {
     let item: ClipItem
 
-    private var store: ClipboardStore { ClipboardStore.shared }
+    @State private var image: NSImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -32,13 +32,18 @@ struct ClipPreviewView: View {
         }
         .padding(20)
         .frame(minWidth: 400, minHeight: 260)
+        .task(id: item.id) {
+            let loaded = await ClipPreviewProvider.image(for: item, scale: 2)
+            if !Task.isCancelled { image = loaded }
+        }
+        .onDisappear { image = nil }
     }
 
     @ViewBuilder
     private var preview: some View {
         switch item.type {
         case .image:
-            if let image = store.loadImage(for: item) {
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)

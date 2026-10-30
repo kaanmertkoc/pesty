@@ -1,3 +1,5 @@
+This is archived upstream website content. The personal offline fork removes all iCloud/sync code. See the repository README for current build, storage, privacy, and resource limits.
+
 # Pesty
 
 > A free, open-source clipboard manager for macOS with a color-coded strip, searchable history, pinboards, and keyboard navigation.

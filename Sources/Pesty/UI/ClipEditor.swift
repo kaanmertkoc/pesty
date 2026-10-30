@@ -7,12 +7,11 @@ enum ClipEditor {
         case color(String)
     }
 
-    static func run(for item: ClipItem, launchWritingTools: Bool = false) -> Edit? {
+    static func run(for item: ClipItem) -> Edit? {
         NSApp.activate(ignoringOtherApps: true)
         switch item.type {
         case .text, .richText, .link:
-            return TextClipEditorController(item: item,
-                                            launchWritingTools: launchWritingTools).run()
+            return TextClipEditorController(item: item).run()
         case .color:
             return editColor(item)
         case .image, .file:
@@ -48,17 +47,15 @@ enum ClipEditor {
 @MainActor
 private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private let item: ClipItem
-    private let launchWritingTools: Bool
     private let panel: NSPanel
-    private let textView = NSTextView()
+    private let textView = OfflineTextView()
     private let saveButton = NSButton()
     private let statsLabel = NSTextField(labelWithString: "")
     private var result: ClipEditor.Edit?
     private var appliedRichFormatting = false
 
-    init(item: ClipItem, launchWritingTools: Bool) {
+    init(item: ClipItem) {
         self.item = item
-        self.launchWritingTools = launchWritingTools
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
             styleMask: [.titled, .closable, .resizable, .utilityWindow, .fullSizeContentView],
@@ -78,10 +75,6 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(textView)
-
-        if launchWritingTools {
-            DispatchQueue.main.async { self.showWritingTools() }
-        }
 
         NSApp.runModal(for: panel)
         panel.orderOut(nil)
@@ -133,7 +126,7 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
                                                        height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         if #available(macOS 15.0, *) {
-            textView.writingToolsBehavior = .complete
+            textView.writingToolsBehavior = .none
         }
     }
 
@@ -176,13 +169,6 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
         ])
         formatting.orientation = .horizontal
         formatting.spacing = 6
-
-        if writingToolsAvailable {
-            formatting.addArrangedSubview(
-                toolbarSymbolButton(symbol: "pencil.and.scribble",
-                                    tooltip: "Writing Tools",
-                                    action: #selector(showWritingTools)))
-        }
 
         let leadingSpacer = flexibleSpacer()
         let trailingSpacer = flexibleSpacer()
@@ -252,11 +238,6 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
         textView.setSelectedRange(NSRange(location: 0, length: 0))
     }
 
-    private var writingToolsAvailable: Bool {
-        guard #available(macOS 15.2, *) else { return false }
-        return NSWritingToolsCoordinator.isWritingToolsAvailable
-    }
-
     private func toolbarTextButton(_ title: String,
                                    tooltip: String,
                                    action: Selector,
@@ -271,18 +252,6 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
         if underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if strikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         button.attributedTitle = NSAttributedString(string: title, attributes: attributes)
-        return button
-    }
-
-    private func toolbarSymbolButton(symbol: String,
-                                     tooltip: String,
-                                     action: Selector) -> NSButton {
-        let button = configuredToolbarButton(tooltip: tooltip, action: action)
-        let configuration = NSImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
-            .withSymbolConfiguration(configuration)
-        button.image?.isTemplate = true
-        button.imagePosition = .imageOnly
         return button
     }
 
@@ -314,18 +283,13 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
 
     @objc private func save() {
         let text = textView.string
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard ClipResourceLimits.acceptsText(text),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
         let shouldSaveRichText = item.type == .richText || appliedRichFormatting
         let range = NSRange(location: 0, length: textView.textStorage?.length ?? 0)
         let richTextData = shouldSaveRichText ? textView.rtf(from: range) : nil
         finish(with: .text(text, richTextData: richTextData))
-    }
-
-    @objc private func showWritingTools() {
-        guard #available(macOS 15.2, *), NSWritingToolsCoordinator.isWritingToolsAvailable else { return }
-        panel.makeFirstResponder(textView)
-        textView.showWritingTools(nil)
     }
 
     @objc private func toggleBold() {
@@ -420,7 +384,11 @@ private final class TextClipEditorController: NSObject, NSTextViewDelegate, NSWi
         let wordStat = "\(words) \(countLabel(words, singular: "word"))"
         let lineStat = "\(lines) \(countLabel(lines, singular: "line"))"
         statsLabel.stringValue = [characterStat, wordStat, lineStat].joined(separator: "  ·  ")
-        saveButton.isEnabled = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        saveButton.isEnabled = ClipResourceLimits.acceptsText(text)
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !ClipResourceLimits.acceptsText(text) {
+            statsLabel.stringValue = "Text exceeds the 1 MiB limit. Shorten it to save."
+        }
     }
 
     private func countLabel(_ count: Int, singular: String) -> String {
@@ -467,5 +435,22 @@ private final class ColorEditorAccessoryView: NSStackView {
 
     @objc private func colorDidChange() {
         valueLabel.stringValue = selectedHex
+    }
+}
+
+/// Keep editor paste/drop from invoking AppKit's HTML importer as well.
+@MainActor
+final class OfflineTextView: NSTextView {
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.rtf, .string] }
+
+    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == .rtf || type == .string else { return false }
+        if type == .rtf {
+            guard let data = pboard.data(forType: type),
+                  ClipResourceLimits.boundedRTF(data) != nil else { return false }
+        } else if let text = pboard.string(forType: type), !ClipResourceLimits.acceptsText(text) {
+            return false
+        }
+        return super.readSelection(from: pboard, type: type)
     }
 }

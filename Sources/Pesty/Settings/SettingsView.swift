@@ -192,29 +192,6 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
 
-            #if MAS
-            Section("Sync") {
-                Toggle("Sync history with iCloud", isOn: Binding(
-                    get: { settings.cloudKitSync },
-                    set: { on in
-                        settings.cloudKitSync = on
-                        if on { CloudSyncService.shared.enable() } else { CloudSyncService.shared.stop() }
-                    }))
-                Text(CloudSyncService.shared.status)
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            #else
-            Section("Sync") {
-                Toggle("Sync clipboard via iCloud Drive", isOn: Binding(
-                    get: { settings.iCloudSync },
-                    set: { _ in AppController.shared.toggleICloudSync() }))
-                Text(ClipboardStore.shared.iCloudAvailable
-                     ? "Keeps your history and pinboards in sync across your Macs through iCloud Drive."
-                     : "Sign in to iCloud and enable iCloud Drive to use sync.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            #endif
-
             #if !MAS
             Section("Permissions") {
                 HStack(spacing: 10) {
@@ -246,8 +223,15 @@ private struct GeneralSettings: View {
             #endif
 
             Section("Data") {
+                Text("History stays on this Mac. Automatic history is limited to 32 MiB of text and metadata plus 256 MiB of images. Pinned clips are kept until you remove them.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Text over 1 MiB and images over 16 MiB or 24 megapixels are skipped. Oversized rich formatting is dropped; plain text is kept when it fits.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = ClipboardStore.shared.persistenceError {
+                    Text(error).foregroundStyle(.red).textSelection(.enabled)
+                }
                 Toggle("Delete permanently", isOn: $settings.deletePermanently)
-                Text("Skips the five-minute Undo window: deleted clips are removed at once and cannot be recovered. Hold Option while deleting to skip Undo for one deletion, whatever this setting says.")
+                Text("Skips the Undo window (up to five minutes, 100 clips, or 32 MiB): deleted clips are removed at once and cannot be recovered. Hold Option while deleting to skip Undo for one deletion, whatever this setting says.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Clear Clipboard History", role: .destructive) {
@@ -406,11 +390,7 @@ private struct HistoryRetentionSettings: View {
     }
 
     private var footnote: String {
-        #if MAS
-        "Pruning tidies this Mac only — synced copies stay on your other devices. Pinned clips are never removed."
-        #else
         "Pruning applies to this Mac's history. Pinned clips are never removed."
-        #endif
     }
 
     private func evaluateDraft() {
@@ -456,11 +436,9 @@ private struct AboutView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
-            HStack(spacing: 16) {
-                Link("GitHub", destination: URL(string: "https://github.com/momenbasel/pesty")!)
-                Link("Report an Issue", destination: URL(string: "https://github.com/momenbasel/pesty/issues")!)
-            }
-            .padding(.top, 4)
+            Text("Personal offline build")
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
             Button("Quit Pesty", role: .destructive) {
                 NSApp.terminate(nil)
             }

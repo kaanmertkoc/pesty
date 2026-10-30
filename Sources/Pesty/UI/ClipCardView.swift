@@ -51,6 +51,7 @@ struct ClipCardView: View {
         .onDrag { ClipDragProvider.make(for: item) }
         .contextMenu { menu }
         .task(id: item.id) { await loadPreview() }
+        .onDisappear { preview = nil; fileInfo = nil }
     }
 
     private var header: some View {
@@ -110,8 +111,7 @@ struct ClipCardView: View {
         .background(Theme.cardBody)
     }
 
-    /// Image clips, and file clips pointing at an image, which is how a copied
-    /// screenshot usually arrives, run edge to edge instead of sitting inset.
+    /// Captured images run edge to edge instead of sitting inset.
     private var showsImage: Bool {
         ClipPreviewProvider.showsImage(item) && !previewFailed
     }
@@ -144,7 +144,7 @@ struct ClipCardView: View {
             }
             .frame(maxWidth: .infinity)
         default:
-            Text(item.text ?? "")
+            Text(String((item.text ?? "").prefix(2048)))
                 .font(.system(size: 12.5))
                 .foregroundStyle(Theme.cardTextPrimary.opacity(0.9))
                 .lineLimit(10)
@@ -199,7 +199,9 @@ struct ClipCardView: View {
         previewFailed = false
         if ClipPreviewProvider.showsImage(item) {
             if preview == nil {
-                preview = await ClipPreviewProvider.image(for: item, scale: NSScreen.main?.backingScaleFactor ?? 2)
+                let loaded = await ClipPreviewProvider.image(for: item, scale: NSScreen.main?.backingScaleFactor ?? 2)
+                guard !Task.isCancelled else { return }
+                preview = loaded
             }
             guard preview == nil, item.type == .file else { return }
             previewFailed = true
@@ -245,10 +247,6 @@ struct ClipCardView: View {
         .padding(.top, 8)
     }
 
-    private var isSingleImageFile: Bool {
-        ClipPreviewProvider.imageFileURL(for: item) != nil
-    }
-
     /// NSHomeDirectory is the sandbox container in the App Store build, so the
     /// real home comes from the account record instead.
     private static let homePath: String = {
@@ -276,14 +274,6 @@ struct ClipCardView: View {
                     .compactMap { URL(string: $0)?.lastPathComponent }
                     .joined(separator: ", ")
             }
-            // An image shows what it is, so its size is the useful fact; a
-            // screenshot's path is a timestamped folder nobody reads. Files
-            // without a preview get the full location instead, since two
-            // documents of the same name differ only by where they live.
-            if isSingleImageFile {
-                guard let size = ImagePixelSize.of(url) else { return url.lastPathComponent }
-                return "\(Int(size.width)) × \(Int(size.height))"
-            }
             return Self.abbreviatedPath(url.path)
         case .image:
             guard let size = ImagePixelSize.of(item) else { return "Image" }
@@ -296,13 +286,19 @@ struct ClipCardView: View {
     @ViewBuilder
     private var menu: some View {
         Button { AppController.shared.pasteItem(item) } label: {
-            Label(AppController.shared.pasteMenuTitle, systemImage: "doc.on.clipboard")
+            Label(item.canCopyPath ? "Paste Path" : AppController.shared.pasteMenuTitle, systemImage: "doc.on.clipboard")
         }
 
-        Button { AppController.shared.pasteItem(item, format: .plainText) } label: {
-            Label("Paste as Plain Text", systemImage: "text.alignleft")
+        if item.canCopyPath {
+            Button { AppController.shared.pasteItem(item, format: .original) } label: {
+                Label(item.type == .image ? "Paste Image" : "Paste File", systemImage: "doc.on.clipboard")
+            }
+        } else {
+            Button { AppController.shared.pasteItem(item, format: .plainText) } label: {
+                Label("Paste as Plain Text", systemImage: "text.alignleft")
+            }
+            .disabled(item.plainText == nil)
         }
-        .disabled(item.plainText == nil)
 
         Button { AppController.shared.pasteItem(item, format: .cleanFormatting) } label: {
             Label("Paste with Clean Formatting", systemImage: "paintbrush")
@@ -315,7 +311,12 @@ struct ClipCardView: View {
         .disabled(!FormatConverter.canConvert(item))
 
         Button { AppController.shared.copyItem(item) } label: {
-            Label("Copy", systemImage: "doc.on.doc")
+            Label(item.canCopyPath ? "Copy Path" : "Copy", systemImage: "doc.on.doc")
+        }
+        if item.type == .image || item.type == .file {
+            Button { AppController.shared.copyItem(item, format: .original) } label: {
+                Label(item.type == .image ? "Copy Image" : "Copy File", systemImage: "doc.on.clipboard")
+            }
         }
 
         Divider()
@@ -324,12 +325,6 @@ struct ClipCardView: View {
             Label("Edit", systemImage: "pencil")
         }
         .disabled(!isEditable)
-
-        if writingToolsAvailable {
-            Button { AppController.shared.editItem(item, launchWritingTools: true) } label: {
-                Label("Writing Tools", systemImage: "pencil.and.scribble")
-            }
-        }
 
         Button { renameItem() } label: {
             Label("Rename…", systemImage: "pencil.line")
@@ -387,12 +382,6 @@ struct ClipCardView: View {
 
     private var isEditable: Bool {
         [.text, .richText, .link, .color].contains(item.type)
-    }
-
-    private var writingToolsAvailable: Bool {
-        guard [.text, .richText, .link].contains(item.type) else { return false }
-        guard #available(macOS 15.2, *) else { return false }
-        return NSWritingToolsCoordinator.isWritingToolsAvailable
     }
 
     private func renameItem() {

@@ -3,7 +3,7 @@ import CoreGraphics
 /// Pure sizing rules shared by the Paste Bar's persisted preference and its
 /// live-resize interaction.
 enum BarResizeGeometry {
-    static let defaultHeight = 430.0
+    static let defaultHeight = 380.0
     static let minimumHeight = 300.0
     static let maximumHeight = 720.0
 

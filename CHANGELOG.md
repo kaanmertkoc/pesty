@@ -1,3 +1,15 @@
+# Personal offline fork (unreleased)
+
+- Image/file Copy and normal paste (⌘1–⌘9, Return, double-click) use full local paths, including clipboard-only screenshots; explicit Copy/Paste Image and File actions preserve the originals.
+
+- Removed both sync implementations, cloud entitlements, push registration, and sync controls.
+- Removed HTML imports and Writing Tools; referenced files no longer trigger automatic previews.
+- Added capture/history/Undo/cache limits and background, coalesced atomic persistence.
+- Preserved corrupt history, deferred image deletion until persistence is safe, and cleaned up orphaned images.
+- Added native-architecture local builds and offline/resource regression coverage.
+
+The entries below describe upstream releases before this fork.
+
 # Changelog
 
 All notable changes to Pesty are documented here. The format is based on

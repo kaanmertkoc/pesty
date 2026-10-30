@@ -14,7 +14,7 @@ git clone https://github.com/momenbasel/pesty.git
 cd pesty
 swift build          # compile
 swift run            # run in place
-swift run Pesty --demo   # run with sample clips and the strip open (for UI work)
+swift run Pesty --demo   # adds sample clips to local history; use only with disposable development data
 ```
 
 To build a distributable bundle:
@@ -50,7 +50,7 @@ open packaging/Pesty.app
 - Large preview pane for the selected clip
 - Drag-and-drop out of a card
 - Resize handle on the strip (Paste-style)
-- iCloud / file-based sync
+- Keep this personal fork offline; cloud/file-based sync is intentionally removed.
 - Richer renderers (RTF, link previews with favicons)
 
 ## Code of conduct

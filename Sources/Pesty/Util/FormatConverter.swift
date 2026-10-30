@@ -1,16 +1,15 @@
 import AppKit
 
 /// Converts rich clips for the "Clean Formatting" and "Markdown" paste
-/// options. HTML is preferred as the source when the clip carried it —
-/// browser copies often have no RTF at all — with RTF as the fallback.
+/// options using local RTF only. HTML import can fetch external resources;
+/// HTML-only clips deliberately fall back to their captured plain text.
 enum FormatConverter {
     /// Above this, skip rich conversion entirely and let the caller fall back
-    /// to plain text. The HTML importer runs synchronously on the main thread
-    /// at paste time; a pathological clip must not hitch the paste.
+    /// to plain text. A pathological clip must not hitch the paste.
     private static let maxRichSourceBytes = 1_000_000
 
     static func canConvert(_ item: ClipItem) -> Bool {
-        withinLimit(item.htmlData) || withinLimit(item.rtfData)
+        withinLimit(item.rtfData)
     }
 
     private static func withinLimit(_ data: Data?) -> Bool {
@@ -19,14 +18,6 @@ enum FormatConverter {
     }
 
     private static func attributed(for item: ClipItem) -> NSAttributedString? {
-        // The importer loads no subresources, so the HTML goes in as captured;
-        // the timeout only bounds the document load itself.
-        if let html = item.htmlData, withinLimit(html),
-           let s = NSAttributedString(html: html,
-                                      options: [.timeout: 2.0],
-                                      documentAttributes: nil) {
-            return s
-        }
         if let rtf = item.rtfData, withinLimit(rtf),
            let s = NSAttributedString(rtf: rtf, documentAttributes: nil) {
             return s

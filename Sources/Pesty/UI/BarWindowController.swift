@@ -46,8 +46,8 @@ final class BarWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private static let showDuration: TimeInterval = 0.22
-    private static let hideDuration: TimeInterval = 0.16
+    private static let showDuration: TimeInterval = 0.10
+    private static let hideDuration: TimeInterval = 0.08
 
     private static var contentBottomExtension: CGFloat {
         if #available(macOS 26.0, *) { return Theme.cornerRadius }

@@ -3,30 +3,22 @@ import XCTest
 
 @MainActor
 final class ClipPreviewProviderTests: XCTestCase {
-    func testOnlySingleImageFilesShowAsImages() {
-        let png = ClipItem(type: .file, fileURLs: ["file:///tmp/shot.png"])
-        let pdf = ClipItem(type: .file, fileURLs: ["file:///tmp/report.pdf"])
-        let two = ClipItem(type: .file, fileURLs: ["file:///tmp/a.png", "file:///tmp/b.png"])
-
-        XCTAssertEqual(ClipPreviewProvider.imageFileURL(for: png)?.path, "/tmp/shot.png")
-        XCTAssertNil(ClipPreviewProvider.imageFileURL(for: pdf))
-        XCTAssertNil(ClipPreviewProvider.imageFileURL(for: two))
+    func testOnlyCapturedImagesArePreviewed() async {
+        for path in ["file:///tmp/shot.png", "file:///Volumes/server/remote.jpg", "https://example.com/image.png"] {
+            let file = ClipItem(type: .file, fileURLs: [path])
+            XCTAssertFalse(ClipPreviewProvider.showsImage(file))
+            let image = await ClipPreviewProvider.image(for: file, scale: 2)
+            XCTAssertNil(image)
+        }
         XCTAssertTrue(ClipPreviewProvider.showsImage(ClipItem(type: .image, imageFileName: "x.png")))
-        XCTAssertFalse(ClipPreviewProvider.showsImage(pdf))
     }
 
-    func testFileInfoReportsMissingFilesOnlyOnENOENT() async {
-        let present = ClipItem(type: .file, fileURLs: ["file:///bin/ls"])
-        let gone = ClipItem(type: .file, fileURLs: ["file:///nonexistent/\(UUID().uuidString).pdf"])
-
-        let presentInfo = await ClipPreviewProvider.fileInfo(for: present)
-        XCTAssertEqual(presentInfo?.isMissing, false)
-        XCTAssertNotNil(presentInfo?.icon)
-
-        let goneInfo = await ClipPreviewProvider.fileInfo(for: gone)
-        XCTAssertEqual(goneInfo?.isMissing, !ClipboardStore.isSandboxed)
-        XCTAssertNotNil(goneInfo?.icon)
-
+    func testFileIconsDoNotDependOnAccessToOriginalFile() async {
+        // This path must never be stat'ed or passed to a thumbnail provider.
+        let file = ClipItem(type: .file, fileURLs: ["file:///nonexistent/\(UUID().uuidString).pdf"])
+        let info = await ClipPreviewProvider.fileInfo(for: file)
+        XCTAssertNotNil(info?.icon)
+        XCTAssertEqual(info?.isMissing, false)
         let text = await ClipPreviewProvider.fileInfo(for: ClipItem(type: .text, text: "x"))
         XCTAssertNil(text)
     }

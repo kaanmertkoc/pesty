@@ -215,8 +215,6 @@ final class Settings {
         static let showBarResizeHandle = "showBarResizeHandle"
         static let showMenuBarIcon = "showMenuBarIcon"
         static let onboarded = "onboarded"
-        static let iCloudSync = "iCloudSync"
-        static let cloudKitSync = "cloudKitSync"
         static let clipColorTheme = "clipColorTheme"
         static let clipColorAccentHex = "clipColorAccentHex"
         static let selectedClipPosition = "selectedClipPosition"
@@ -225,7 +223,8 @@ final class Settings {
     var historyLimit: Int {
         didSet {
             guard isLoaded else { return }
-            if historyLimit < 20 { historyLimit = 20; return }
+            let clamped = min(ClipResourceLimits.maximumHistoryCount, max(20, historyLimit))
+            if historyLimit != clamped { historyLimit = clamped }
             d.set(historyLimit, forKey: Keys.historyLimit)
         }
     }
@@ -348,14 +347,6 @@ final class Settings {
         didSet { guard isLoaded else { return }; d.set(onboarded, forKey: Keys.onboarded) }
     }
 
-    var iCloudSync: Bool {
-        didSet { guard isLoaded else { return }; d.set(iCloudSync, forKey: Keys.iCloudSync) }
-    }
-
-    var cloudKitSync: Bool {
-        didSet { guard isLoaded else { return }; d.set(cloudKitSync, forKey: Keys.cloudKitSync) }
-    }
-
     var clipColorTheme: ClipColorTheme {
         didSet { guard isLoaded else { return }; d.set(clipColorTheme.rawValue, forKey: Keys.clipColorTheme) }
     }
@@ -392,13 +383,11 @@ final class Settings {
             Keys.showBarResizeHandle: false,
             Keys.showMenuBarIcon: true,
             Keys.onboarded: false,
-            Keys.iCloudSync: false,
-            Keys.cloudKitSync: true,
             Keys.clipColorTheme: ClipColorTheme.default.rawValue,
             Keys.clipColorAccentHex: "#FF5A9F",
             Keys.selectedClipPosition: SelectedClipPosition.center.rawValue
         ])
-        historyLimit = d.integer(forKey: Keys.historyLimit)
+        historyLimit = min(ClipResourceLimits.maximumHistoryCount, max(20, d.integer(forKey: Keys.historyLimit)))
         historyRetentionMode = HistoryRetentionMode(rawValue: d.string(forKey: Keys.historyRetentionMode) ?? "")
             ?? .itemCount
         historyRetentionDays = max(0, d.integer(forKey: Keys.historyRetentionDays))
@@ -422,8 +411,6 @@ final class Settings {
         showBarResizeHandle = d.bool(forKey: Keys.showBarResizeHandle)
         showMenuBarIcon = d.bool(forKey: Keys.showMenuBarIcon)
         onboarded = d.bool(forKey: Keys.onboarded)
-        iCloudSync = d.bool(forKey: Keys.iCloudSync)
-        cloudKitSync = d.bool(forKey: Keys.cloudKitSync)
         clipColorTheme = ClipColorTheme(rawValue: d.integer(forKey: Keys.clipColorTheme)) ?? .default
         clipColorAccentHex = d.string(forKey: Keys.clipColorAccentHex) ?? "#FF5A9F"
         selectedClipPosition = SelectedClipPosition(rawValue: d.integer(forKey: Keys.selectedClipPosition)) ?? .center

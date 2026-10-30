@@ -4,7 +4,6 @@ import CryptoKit
 @MainActor
 final class ClipboardMonitor {
     private static let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
-    private static let htmlCaptureLimit = 64 * 1024
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int
     private var timer: Timer?
@@ -21,13 +20,20 @@ final class ClipboardMonitor {
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
+        t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
 
     func stop() { timer?.invalidate(); timer = nil }
 
-    func togglePause() { isPaused.toggle() }
+    func togglePause() {
+        isPaused.toggle()
+        if isPaused { stop() } else {
+            lastChangeCount = pasteboard.changeCount
+            start()
+        }
+    }
 
     private func poll() {
         let current = pasteboard.changeCount
@@ -35,8 +41,10 @@ final class ClipboardMonitor {
         lastChangeCount = current
         guard !isPaused else { return }
         if current == suppressUntilChangeCount { return }
-        guard let item = makeItem() else { return }
-        ClipboardStore.shared.addCaptured(item)
+        autoreleasepool {
+            guard let item = makeItem() else { return }
+            ClipboardStore.shared.addCaptured(item)
+        }
     }
 
     private func makeItem() -> ClipItem? {
@@ -68,7 +76,7 @@ final class ClipboardMonitor {
         // The pasteboard is polled every 0.4s, so by the time a copy is noticed the user
         // may already have switched away from the app they copied from. Check the app
         // that was frontmost a moment ago as well: a false positive costs one skipped
-        // clip, a false negative leaks a password into history and into iCloud.
+        // clip, a false negative leaks a password into history.
         let ignored = Settings.shared.isIgnoringSourceApp(declaredSourceID)
             || Settings.shared.isIgnoringSourceApp(src?.bundleIdentifier)
             || Settings.shared.isIgnoringSourceApp(AppController.shared.lastActiveApp?.bundleIdentifier)
@@ -82,6 +90,8 @@ final class ClipboardMonitor {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
                                              options: [.urlReadingFileURLsOnly: true]) as? [URL],
            !urls.isEmpty {
+            guard urls.count <= 100,
+                  urls.reduce(0, { $0 + $1.absoluteString.utf8.count }) <= ClipResourceLimits.textBytes else { return nil }
             var item = ClipItem(type: .file,
                                 text: urls.map(\.lastPathComponent).joined(separator: ", "),
                                 fileURLs: urls.map(\.absoluteString))
@@ -90,25 +100,15 @@ final class ClipboardMonitor {
         }
 
         if types.contains(.png) || types.contains(.tiff) {
-            if let data = pngData() {
-                let hash = Self.sha256Hex(data)
-                guard let name = ClipboardStore.shared.storeImageData(data) else { return nil }
-                var item = ClipItem(type: .image, imageFileName: name, imageHash: hash)
+            if var item = Self.captureImage(from: pasteboard, into: ClipboardStore.shared) {
                 decorate(&item)
                 return item
             }
         }
 
-        let rtf = pasteboard.data(forType: .rtf)
-        // Browsers often provide HTML with no RTF; keep it for the Markdown
-        // and Clean Formatting paste conversions without changing how the
-        // clip is classified. RTF already serves those conversions, so HTML
-        // is stored only when there is none, and only up to a bound that
-        // keeps store.json, rewritten on every capture, from growing by the
-        // size of every web page copied from.
-        var html = rtf == nil ? pasteboard.data(forType: .html) : nil
-        if let data = html, data.count > Self.htmlCaptureLimit { html = nil }
+        let rtf = ClipResourceLimits.boundedRTF(pasteboard.data(forType: .rtf))
         if let string = pasteboard.string(forType: .string), !string.isEmpty {
+            guard ClipResourceLimits.acceptsText(string) else { return nil }
             let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
             let type: ClipType
             if rtf != nil {
@@ -118,7 +118,7 @@ final class ClipboardMonitor {
             } else {
                 type = .text
             }
-            var item = ClipItem(type: type, text: string, rtfData: rtf, htmlData: html)
+            var item = ClipItem(type: type, text: string, rtfData: rtf)
             decorate(&item)
             return item
         }
@@ -140,11 +140,24 @@ final class ClipboardMonitor {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func pngData() -> Data? {
-        if let data = pasteboard.data(forType: .png) { return data }
+    /// Store clipboard-only screenshots before creating their history card so
+    /// Copy Path always has a real local file, without opening a Save dialog.
+    static func captureImage(from pasteboard: NSPasteboard, into store: ClipboardStore) -> ClipItem? {
+        guard let data = pngData(from: pasteboard),
+              let name = store.storeImageData(data) else { return nil }
+        return ClipItem(type: .image, imageFileName: name, imageHash: sha256Hex(data))
+    }
+
+    private static func pngData(from pasteboard: NSPasteboard) -> Data? {
+        if let data = pasteboard.data(forType: .png) {
+            return ClipResourceLimits.acceptsImage(data) ? data : nil
+        }
         guard let tiff = pasteboard.data(forType: .tiff),
+              ClipResourceLimits.acceptsImage(tiff),
               let rep = NSBitmapImageRep(data: tiff) else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        guard let png = rep.representation(using: .png, properties: [:]),
+              ClipResourceLimits.acceptsImage(png) else { return nil }
+        return png
     }
 
     private static func validatedSourceBundleID(_ raw: String?) -> String? {

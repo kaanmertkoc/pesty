@@ -47,6 +47,12 @@ struct ClipItem: Identifiable, Codable, Equatable {
 
     var charCount: Int { text?.count ?? 0 }
 
+    /// Image captures already have a private local PNG, even when the source
+    /// was an unsaved screenshot copied straight to the system clipboard.
+    var canCopyPath: Bool {
+        (type == .image && imageFileName != nil) || (type == .file && !fileURLs.isEmpty)
+    }
+
     var plainText: String? {
         switch type {
         case .image:
