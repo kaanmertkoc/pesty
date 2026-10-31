@@ -8,6 +8,10 @@ enum ClipResourceLimits {
     static let richTextBytes = 1024 * 1024
     static let imageBytes = 16 * 1024 * 1024
     static let imagePixels = 24_000_000
+    // Clipboard TIFFs commonly contain uncompressed RGBA pixels. Allow the
+    // pixel budget plus metadata while converting, then enforce imageBytes
+    // on the PNG that is actually retained in history.
+    static let clipboardTIFFBytes = imagePixels * 4 + 1024 * 1024
     static let historyPayloadBytes = 32 * 1024 * 1024
     static let historyImageBytes = 256 * 1024 * 1024
     static let maximumHistoryCount = 5000
@@ -22,8 +26,8 @@ enum ClipResourceLimits {
         return data
     }
 
-    static func acceptsImage(_ data: Data) -> Bool {
-        guard data.count <= imageBytes,
+    static func acceptsImage(_ data: Data, byteLimit: Int = imageBytes) -> Bool {
+        guard data.count <= byteLimit,
               let source = CGImageSourceCreateWithData(data as CFData,
                   [kCGImageSourceShouldCache: false] as CFDictionary),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],

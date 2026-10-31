@@ -20,11 +20,17 @@ final class ImagePathCopyTests: XCTestCase {
         return store
     }
 
-    private func imageData(_ type: NSBitmapImageRep.FileType = .png) throws -> Data {
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 3,
+    private func imageData(_ type: NSBitmapImageRep.FileType = .png,
+                           width: Int = 4, height: Int = 3) throws -> Data {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
-            bytesPerRow: 16, bitsPerPixel: 32))
+            bytesPerRow: width * 4, bitsPerPixel: 32))
         bitmap.bitmapData?.initialize(repeating: 0, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+        bitmap.bitmapData?[0] = 255
+        bitmap.bitmapData?[3] = 255
+        if type == .tiff {
+            return try XCTUnwrap(bitmap.tiffRepresentation(using: .none, factor: 0))
+        }
         return try XCTUnwrap(bitmap.representation(using: type, properties: [:]))
     }
 
@@ -65,6 +71,164 @@ final class ImagePathCopyTests: XCTestCase {
         XCTAssertTrue(path.hasSuffix(".png"))
         let png = try Data(contentsOf: URL(fileURLWithPath: path))
         XCTAssertEqual(Array(png.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+    }
+
+    func testLargeTIFFScreenshotIsConvertedBeforeApplyingStoredImageLimit() throws {
+        let store = try store()
+        let source = pasteboard()
+        // An ordinary Retina screenshot exceeds 16 MiB as an uncompressed
+        // clipboard TIFF, even when its PNG is comfortably within the limit.
+        let tiff = try imageData(.tiff, width: 2560, height: 1800)
+        XCTAssertGreaterThan(tiff.count, ClipResourceLimits.imageBytes)
+        source.setData(tiff, forType: .tiff)
+
+        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        let url = try XCTUnwrap(store.imageURL(for: item))
+        let png = try Data(contentsOf: url)
+        XCTAssertTrue(ClipResourceLimits.acceptsImage(png))
+        let restored = try XCTUnwrap(NSBitmapImageRep(data: png))
+        XCTAssertEqual(restored.pixelsWide, 2560)
+        XCTAssertEqual(restored.pixelsHigh, 1800)
+        XCTAssertEqual(restored.colorAt(x: 0, y: 0)?.redComponent, 1)
+
+        let destination = pasteboard()
+        PasteService.copy(item, format: .filePath, to: destination, store: store)
+        XCTAssertEqual(destination.string(forType: .string), url.path)
+        PasteService.copy(item, format: .original, to: destination, store: store)
+        XCTAssertEqual(destination.data(forType: .png), png)
+    }
+
+    func testInvalidPNGRepresentationFallsBackToValidTIFF() throws {
+        let store = try store()
+        let source = pasteboard()
+        source.setData(Data("invalid PNG".utf8), forType: .png)
+        source.setData(try imageData(.tiff), forType: .tiff)
+
+        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        let url = try XCTUnwrap(store.imageURL(for: item))
+        XCTAssertTrue(ClipResourceLimits.acceptsImage(try Data(contentsOf: url)))
+    }
+
+    func testScreenshotCopyAutomaticallyAddsPasteablePathAndKeepsImageFormats() throws {
+        let store = try store()
+        let source = pasteboard()
+        let png = try imageData()
+        let tiff = try imageData(.tiff)
+        source.setData(png, forType: .png)
+        source.setData(tiff, forType: .tiff)
+        let change = source.changeCount
+        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        store.addCaptured(item)
+
+        let ownChange = ClipboardMonitor.addImagePath(for: item, to: source, store: store,
+                                                     ifUnchangedSince: change)
+
+        XCTAssertEqual(ownChange, source.changeCount)
+        let path = try XCTUnwrap(source.string(forType: .string))
+        XCTAssertEqual(path, store.imageURL(for: item)?.path)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), png)
+        XCTAssertEqual(source.data(forType: .png), png)
+        XCTAssertEqual(source.data(forType: .tiff), tiff)
+        XCTAssertNil(ClipboardMonitor.addImagePath(for: item, to: source, store: store,
+                                                   ifUnchangedSince: source.changeCount))
+        XCTAssertEqual(source.changeCount, ownChange)
+    }
+
+    func testAutomaticScreenshotPathDoesNotOverwriteANewerCopy() throws {
+        let store = try store()
+        let source = pasteboard()
+        source.setData(try imageData(), forType: .png)
+        let change = source.changeCount
+        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        store.addCaptured(item)
+        source.clearContents()
+        let newer = try imageData(.tiff)
+        source.setData(newer, forType: .tiff)
+        let newerChange = source.changeCount
+
+        XCTAssertNil(ClipboardMonitor.addImagePath(for: item, to: source, store: store,
+                                                   ifUnchangedSince: change))
+        XCTAssertEqual(source.changeCount, newerChange)
+        XCTAssertEqual(source.data(forType: .tiff), newer)
+        XCTAssertNil(source.string(forType: .string))
+    }
+
+    func testAutomaticScreenshotPathPreservesExistingTextAndSkipsMissingImages() throws {
+        let store = try store()
+        let source = pasteboard()
+        let png = try imageData()
+        source.setData(png, forType: .png)
+        source.setString("original image caption", forType: .string)
+        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        store.addCaptured(item)
+        let change = source.changeCount
+
+        XCTAssertNil(ClipboardMonitor.addImagePath(for: item, to: source, store: store,
+                                                   ifUnchangedSince: change))
+        XCTAssertEqual(source.changeCount, change)
+        XCTAssertEqual(source.string(forType: .string), "original image caption")
+
+        source.clearContents()
+        source.setData(png, forType: .png)
+        try FileManager.default.removeItem(at: XCTUnwrap(store.imageURL(for: item)))
+        let imageChange = source.changeCount
+        XCTAssertNil(ClipboardMonitor.addImagePath(for: item, to: source, store: store,
+                                                   ifUnchangedSince: imageChange))
+        XCTAssertEqual(source.changeCount, imageChange)
+        XCTAssertEqual(source.data(forType: .png), png)
+        XCTAssertNil(source.string(forType: .string))
+    }
+
+    func testRepeatedScreenshotCopyUsesRetainedPathAfterDeduplication() throws {
+        let store = try store()
+        let (original, png) = try capturePNG(in: store)
+        let source = pasteboard()
+        source.setData(png, forType: .png)
+        let change = source.changeCount
+        let duplicate = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        XCTAssertNotEqual(original.imageFileName, duplicate.imageFileName)
+        store.addCaptured(duplicate)
+        store.saveNow()
+
+        XCTAssertNotNil(ClipboardMonitor.addImagePath(for: duplicate, to: source, store: store,
+                                                      ifUnchangedSince: change))
+        XCTAssertEqual(source.string(forType: .string), store.imageURL(for: original)?.path)
+        XCTAssertEqual(store.history.count, 1)
+        let path = try XCTUnwrap(source.string(forType: .string))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), png)
+    }
+
+    func testScreenshotCopiedByAnotherProcessGetsPasteablePath() throws {
+        let store = try store()
+        let source = pasteboard()
+        let png = try imageData()
+        let fixtureName = try XCTUnwrap(store.storeImageData(png))
+        let fixtureURL = try XCTUnwrap(store.imageURL(for: ClipItem(type: .image, imageFileName: fixtureName)))
+        let arguments = try XCTUnwrap(String(data: JSONEncoder().encode([source.name.rawValue, fixtureURL.path]),
+                                            encoding: .utf8))
+        let writer = Process()
+        writer.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        writer.arguments = ["-l", "JavaScript", "-e", """
+            ObjC.import('AppKit');
+            const args = \(arguments);
+            const board = $.NSPasteboard.pasteboardWithName(args[0]);
+            board.clearContents;
+            if (!board.setDataForType($.NSData.dataWithContentsOfFile(args[1]), $.NSPasteboardTypePNG)) {
+                throw new Error('Could not write screenshot fixture');
+            }
+            """]
+        try writer.run()
+        writer.waitUntilExit()
+        XCTAssertEqual(writer.terminationStatus, 0)
+        XCTAssertEqual(source.data(forType: .png), png)
+        let change = source.changeCount
+        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
+        store.addCaptured(item)
+
+        XCTAssertNotNil(ClipboardMonitor.addImagePath(for: item, to: source, store: store,
+                                                      ifUnchangedSince: change))
+        XCTAssertEqual(source.string(forType: .string), store.imageURL(for: item)?.path)
+        XCTAssertEqual(source.data(forType: .png), png)
     }
 
     func testExplicitOriginalStillCopiesImageBytes() throws {

@@ -60,6 +60,11 @@ Keep one copy running. After placing it in its final location, enable **Launch a
 
 ## Copy an image or screenshot path
 
+Copy a screenshot in macshot (or another app) while Pesty is running. Pesty saves a local PNG and adds its path
+as clipboard text automatically, so **⌘V** in a text field or terminal pastes the path without opening Pesty.
+The original image formats stay on the clipboard for apps that paste images. Existing clipboard text is preserved.
+This happens on the next clipboard poll, normally within half a second; paused or excluded copies are not processed.
+
 Open Pesty and press **⌘1–⌘9**, or select an image/file card and press **Return** or double-click it.
 These normal paste actions insert the full local path as text, without an extra modifier or a menu.
 **⌘C** (or **Copy Path** in the card menu) also copies the path for pasting later with **⌘V**.
@@ -135,7 +140,7 @@ This fork adds:
 | Automatic history count | 500 by default; configurable up to 5,000 |
 | Text per capture | 1 MiB UTF-8; oversized clips are skipped, never silently truncated |
 | RTF per capture | 1 MiB; oversized formatting is dropped while bounded plain text survives |
-| Image per capture | 16 MiB encoded and 24 million pixels; checked before TIFF decoding |
+| Image per capture | 16 MiB saved PNG and 24 million pixels; clipboard TIFF input allows 96 MB of pixel data plus 1 MiB of metadata, with dimensions checked before decoding |
 | File-list capture | Up to 100 paths and 1 MiB of URL text |
 | Automatic history payload | 32 MiB of estimated text/RTF/metadata; oldest clips are pruned |
 | Automatic history images | 256 MiB; oldest clips are pruned |

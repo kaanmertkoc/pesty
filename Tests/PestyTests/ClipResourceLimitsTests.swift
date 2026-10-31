@@ -25,6 +25,10 @@ final class ClipResourceLimitsTests: XCTestCase {
         var giantHeader = png
         giantHeader.replaceSubrange(16..<24, with: [0x7f, 0xff, 0xff, 0xff, 0x7f, 0xff, 0xff, 0xff])
         XCTAssertFalse(ClipResourceLimits.acceptsImage(giantHeader))
+        XCTAssertFalse(ClipResourceLimits.acceptsImage(giantHeader,
+            byteLimit: ClipResourceLimits.clipboardTIFFBytes))
+        XCTAssertFalse(ClipResourceLimits.acceptsImage(Data(count: ClipResourceLimits.clipboardTIFFBytes + 1),
+            byteLimit: ClipResourceLimits.clipboardTIFFBytes))
     }
 
     func testHistoryBudgetsKeepNewestPrefix() {
