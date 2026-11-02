@@ -163,7 +163,7 @@ final class ClipboardMonitor {
               // Repeated copies keep the existing history entry and delete
               // the newly captured duplicate file. Publish the retained path.
               let retained = store.history.first(where: { $0.sameContent(as: item) }),
-              let url = store.imageURL(for: retained),
+              let url = store.imagePathURL(for: retained),
               (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
               pasteboard.changeCount == changeCount,
               pasteboard.string(forType: .string) == nil,

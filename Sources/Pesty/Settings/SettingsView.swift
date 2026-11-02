@@ -112,6 +112,10 @@ private struct GeneralSettings: View {
 
             HistoryRetentionSettings()
 
+            #if !MAS
+            ScreenshotFolderSettings()
+            #endif
+
             Section("Quick Paste") {
                 LabeledContent("Paste items 1–9") {
                     HStack(spacing: 6) {
@@ -275,6 +279,68 @@ private struct GeneralSettings: View {
         .frame(minWidth: 118)
     }
 }
+
+#if !MAS
+private struct ScreenshotFolderSettings: View {
+    @Bindable private var settings = Settings.shared
+    @State private var folderError: String?
+
+    private var folder: URL {
+        settings.screenshotFolderURL
+            ?? ClipboardStore.shared.dataDirectory.appendingPathComponent("images", isDirectory: true)
+    }
+
+    var body: some View {
+        Section("Screenshots") {
+            Text(folder.path)
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Choose Folder…", action: chooseFolder)
+                Button("Show in Finder") { NSWorkspace.shared.open(folder) }
+                if settings.screenshotFolderURL != nil {
+                    Button("Use History Folder") {
+                        settings.screenshotFolderPath = ""
+                        ClipboardStore.shared.clearScreenshotExportError()
+                        folderError = nil
+                    }
+                }
+            }
+            Text(settings.screenshotFolderURL == nil
+                 ? "Copied screenshots use Pesty’s history folder and can be removed when history is cleared. Choose a folder to keep permanent copies."
+                 : "Copied screenshots are saved here and their paths are copied automatically. Clearing Pesty’s history won’t delete these files. Existing history is exported when you copy its image paths.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let error = folderError ?? ClipboardStore.shared.screenshotExportError {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
+        }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Screenshot Folder"
+        panel.prompt = "Choose Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = settings.screenshotFolderURL ?? FileManager.default.homeDirectoryForCurrentUser
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard ClipboardStore.shared.allowsScreenshotFolder(url) else {
+            folderError = "Choose a folder outside Pesty’s history folder."
+            return
+        }
+        guard FileManager.default.isWritableFile(atPath: url.path) else {
+            folderError = "Pesty cannot write to this folder. Choose another folder."
+            return
+        }
+        settings.screenshotFolderPath = url.path
+        ClipboardStore.shared.clearScreenshotExportError()
+        folderError = nil
+    }
+}
+#endif
 
 private struct HistoryRetentionSettings: View {
     private var settings = Settings.shared

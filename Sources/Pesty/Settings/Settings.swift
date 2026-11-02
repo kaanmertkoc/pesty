@@ -218,6 +218,7 @@ final class Settings {
         static let clipColorTheme = "clipColorTheme"
         static let clipColorAccentHex = "clipColorAccentHex"
         static let selectedClipPosition = "selectedClipPosition"
+        static let screenshotFolderPath = "screenshotFolderPath"
     }
 
     var historyLimit: Int {
@@ -359,6 +360,21 @@ final class Settings {
         didSet { guard isLoaded else { return }; d.set(selectedClipPosition.rawValue, forKey: Keys.selectedClipPosition) }
     }
 
+    var screenshotFolderPath: String {
+        didSet { guard isLoaded else { return }; d.set(screenshotFolderPath, forKey: Keys.screenshotFolderPath) }
+    }
+
+    var screenshotFolderURL: URL? {
+        #if MAS
+        // The personal direct build supports custom folders. The sandboxed
+        // variant keeps its existing private storage and read-only entitlements.
+        return nil
+        #else
+        guard !screenshotFolderPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: screenshotFolderPath, isDirectory: true)
+        #endif
+    }
+
     private init() {
         d.register(defaults: [
             Keys.historyLimit: 500,
@@ -414,6 +430,7 @@ final class Settings {
         clipColorTheme = ClipColorTheme(rawValue: d.integer(forKey: Keys.clipColorTheme)) ?? .default
         clipColorAccentHex = d.string(forKey: Keys.clipColorAccentHex) ?? "#FF5A9F"
         selectedClipPosition = SelectedClipPosition(rawValue: d.integer(forKey: Keys.selectedClipPosition)) ?? .center
+        screenshotFolderPath = d.string(forKey: Keys.screenshotFolderPath) ?? ""
         isLoaded = true
         if normalizedBarHeight != storedBarHeight {
             d.set(normalizedBarHeight, forKey: Keys.barHeight)

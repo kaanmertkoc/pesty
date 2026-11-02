@@ -60,6 +60,11 @@ Keep one copy running. After placing it in its final location, enable **Launch a
 
 ## Copy an image or screenshot path
 
+Use **Settings → General → Screenshots → Choose Folder…** to choose a folder for copied screenshots and images.
+Pesty saves permanent PNG copies there with timestamped filenames and puts those paths on the clipboard.
+**Show in Finder** opens the selected folder. Changing folders applies to future captures and image paths copied from history.
+Repeated copies reuse the same saved file; an existing file that you edited is preserved under its original name.
+
 Copy a screenshot in macshot (or another app) while Pesty is running. Pesty saves a local PNG and adds its path
 as clipboard text automatically, so **⌘V** in a text field or terminal pastes the path without opening Pesty.
 The original image formats stay on the clipboard for apps that paste images. Existing clipboard text is preserved.
@@ -70,9 +75,13 @@ These normal paste actions insert the full local path as text, without an extra 
 **⌘C** (or **Copy Path** in the card menu) also copies the path for pasting later with **⌘V**.
 Plain-text quick-paste (by default **⌘⇧1–⌘⇧9**) also uses the path for image clips.
 
-A screenshot copied straight to the clipboard does not need to be saved manually: capture already creates a local PNG
-inside Pesty's `images` folder. Copy Path uses that PNG without making another copy. The path remains valid while that
-image is retained; deleting the clip or automatic history pruning can remove it. Save a separate file for a permanent reference.
+A screenshot copied straight to the clipboard does not need to be saved manually. With a folder selected, the exported PNG
+stays there even after its history entry is deleted or pruned. Pesty's private cache still follows the normal history budgets;
+manage the permanent screenshot folder yourself. If the chosen folder cannot be written, capture stays in history and
+Settings shows the error; Pesty does not copy a nonexistent path.
+
+**Use History Folder** restores the original behavior: paths point into Pesty's private `images` folder and remain valid
+only while the image is retained. Previously exported screenshots stay in the folder you chose.
 Use **Copy Image** / **Paste Image** when you want image pixels, or **Copy File** / **Paste File** for a Finder file copy.
 Explicit file copies also supply the full path as their text fallback. Text clips keep their original formatting by default.
 

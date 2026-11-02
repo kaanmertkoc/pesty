@@ -33,7 +33,7 @@ enum PasteService {
     private static func pathText(for item: ClipItem, store: ClipboardStore?) -> String? {
         switch item.type {
         case .image:
-            guard let url = (store ?? .shared).imageURL(for: item),
+            guard let url = (store ?? .shared).imagePathURL(for: item),
                   (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
             return url.path
         case .file:

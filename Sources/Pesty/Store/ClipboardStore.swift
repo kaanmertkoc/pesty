@@ -22,7 +22,7 @@ enum BarInputMode: Equatable {
 @Observable
 @MainActor
 final class ClipboardStore {
-    static let shared = ClipboardStore()
+    static let shared = ClipboardStore(screenshotDirectory: { Settings.shared.screenshotFolderURL })
 
     private(set) var history: [ClipItem] = []
     private(set) var pinboards: [Pinboard] = []
@@ -56,6 +56,8 @@ final class ClipboardStore {
 
     private let persistence: LocalStorePersistence
     private(set) var persistenceError: String?
+    private(set) var screenshotExportError: String?
+    @ObservationIgnored private let screenshotDirectory: () -> URL?
     private var canSave = true
     @ObservationIgnored private var imageSizes: [String: Int] = [:]
     @ObservationIgnored private var pendingImageDeletions: Set<String> = []
@@ -78,7 +80,9 @@ final class ClipboardStore {
     /// Settings can report how much space history actually uses.
     var dataDirectory: URL { baseDir }
 
-    init(baseDirectory: URL = ClipboardStore.localBase) {
+    init(baseDirectory: URL = ClipboardStore.localBase,
+         screenshotDirectory: @escaping () -> URL? = { nil }) {
+        self.screenshotDirectory = screenshotDirectory
         let base = baseDirectory
         baseDir = base
         imagesDir = base.appendingPathComponent("images", isDirectory: true)
@@ -136,6 +140,7 @@ final class ClipboardStore {
             var existing = history.remove(at: idx)
             existing.createdAt = item.createdAt
             history.insert(existing, at: 0)
+            if existing.type == .image { _ = imagePathURL(for: existing) }
             if source == .history && searchText.isEmpty && multiSelectedIDs.isEmpty {
                 selectedID = existing.id
                 selectionAnchorID = existing.id
@@ -145,6 +150,9 @@ final class ClipboardStore {
         }
         history.insert(item, at: 0)
         trimHistory()
+        if item.type == .image, history.contains(where: { $0.id == item.id }) {
+            _ = imagePathURL(for: item)
+        }
         if source == .history && searchText.isEmpty && multiSelectedIDs.isEmpty {
             selectedID = item.id
             selectionAnchorID = item.id
@@ -608,6 +616,38 @@ final class ClipboardStore {
               name.hasSuffix(".png") else { return nil }
         return imagesDir.appendingPathComponent(name)
     }
+
+    /// The path offered to other apps. Previewing and history cleanup continue
+    /// to use the private cache; exported screenshots are never pruned by Pesty.
+    func imagePathURL(for item: ClipItem) -> URL? {
+        guard let source = imageURL(for: item),
+              (try? source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+        guard let directory = screenshotDirectory() else {
+            screenshotExportError = nil
+            return source
+        }
+        guard allowsScreenshotFolder(directory) else {
+            screenshotExportError = "Choose a screenshot folder outside Pesty’s history folder."
+            return nil
+        }
+        do {
+            let saved = try ScreenshotFiles.save(source, in: directory)
+            screenshotExportError = nil
+            return saved
+        } catch {
+            screenshotExportError = "Could not save to the screenshot folder: \(error.localizedDescription) The image is still in Pesty’s history."
+            return nil
+        }
+    }
+
+    func allowsScreenshotFolder(_ directory: URL) -> Bool {
+        guard directory.isFileURL else { return false }
+        let chosen = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        let history = baseDir.standardizedFileURL.resolvingSymlinksInPath().path
+        return chosen != history && !chosen.hasPrefix(history + "/")
+    }
+
+    func clearScreenshotExportError() { screenshotExportError = nil }
 
     func loadImage(for item: ClipItem) -> NSImage? {
         guard let url = imageURL(for: item) else { return nil }
