@@ -4,14 +4,17 @@ import CryptoKit
 @MainActor
 final class ClipboardMonitor {
     private static let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
+    private let store: ClipboardStore
     private var lastChangeCount: Int
     private var timer: Timer?
 
     var suppressUntilChangeCount: Int = -1
     private(set) var isPaused = false
 
-    init() {
+    init(pasteboard: NSPasteboard = .general, store: ClipboardStore? = nil) {
+        self.pasteboard = pasteboard
+        self.store = store ?? .shared
         lastChangeCount = pasteboard.changeCount
     }
 
@@ -35,7 +38,7 @@ final class ClipboardMonitor {
         }
     }
 
-    private func poll() {
+    func poll() {
         let current = pasteboard.changeCount
         guard current != lastChangeCount else { return }
         lastChangeCount = current
@@ -43,13 +46,10 @@ final class ClipboardMonitor {
         if current == suppressUntilChangeCount { return }
         autoreleasepool {
             guard let item = makeItem() else { return }
-            let store = ClipboardStore.shared
+            // Capture history without rewriting the source clipboard. Adding
+            // a path as text makes apps such as Slack paste both it and the
+            // image. Path copies are explicit actions in PasteService.
             store.addCaptured(item)
-            if let change = Self.addImagePath(for: item, to: pasteboard, store: store,
-                                              ifUnchangedSince: current) {
-                suppressUntilChangeCount = change
-                lastChangeCount = change
-            }
         }
     }
 
@@ -106,7 +106,7 @@ final class ClipboardMonitor {
         }
 
         if types.contains(.png) || types.contains(.tiff) {
-            if var item = Self.captureImage(from: pasteboard, into: ClipboardStore.shared) {
+            if var item = Self.captureImage(from: pasteboard, into: store) {
                 decorate(&item)
                 return item
             }
@@ -152,39 +152,6 @@ final class ClipboardMonitor {
         guard let data = pngData(from: pasteboard),
               let name = store.storeImageData(data) else { return nil }
         return ClipItem(type: .image, imageFileName: name, imageHash: sha256Hex(data))
-    }
-
-    /// Make a screenshot copied in another app immediately pasteable as a
-    /// local path in text fields. Keep its image representations for apps that
-    /// accept pixels, and never overwrite a newer copy or existing text.
-    static func addImagePath(for item: ClipItem, to pasteboard: NSPasteboard,
-                             store: ClipboardStore, ifUnchangedSince changeCount: Int) -> Int? {
-        guard item.type == .image,
-              // Repeated copies keep the existing history entry and delete
-              // the newly captured duplicate file. Publish the retained path.
-              let retained = store.history.first(where: { $0.sameContent(as: item) }),
-              let url = store.imagePathURL(for: retained),
-              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
-              pasteboard.changeCount == changeCount,
-              pasteboard.string(forType: .string) == nil,
-              pasteboard.changeCount == changeCount else { return nil }
-        // Another app owns the clipboard, so adding a type in place fails.
-        // Prepare a complete replacement before taking ownership, preserving
-        // every existing representation and checking for a newer copy again.
-        guard let originals = pasteboard.pasteboardItems, !originals.isEmpty else { return nil }
-        var copies: [NSPasteboardItem] = []
-        for original in originals {
-            let copy = NSPasteboardItem()
-            for type in original.types {
-                guard let data = original.data(forType: type), copy.setData(data, forType: type) else { return nil }
-            }
-            copies.append(copy)
-        }
-        guard copies[0].setString(url.path, forType: .string),
-              pasteboard.changeCount == changeCount else { return nil }
-        pasteboard.clearContents()
-        guard pasteboard.writeObjects(copies) else { return nil }
-        return pasteboard.changeCount
     }
 
     private static func pngData(from pasteboard: NSPasteboard) -> Data? {

@@ -61,14 +61,14 @@ Keep one copy running. After placing it in its final location, enable **Launch a
 ## Copy an image or screenshot path
 
 Use **Settings → General → Screenshots → Choose Folder…** to choose a folder for copied screenshots and images.
-Pesty saves permanent PNG copies there with timestamped filenames and puts those paths on the clipboard.
+Pesty saves permanent PNG copies there with timestamped filenames. Copy their paths from Pesty when needed.
 **Show in Finder** opens the selected folder. Changing folders applies to future captures and image paths copied from history.
 Repeated copies reuse the same saved file; an existing file that you edited is preserved under its original name.
 
-Copy a screenshot in macshot (or another app) while Pesty is running. Pesty saves a local PNG and adds its path
-as clipboard text automatically, so **⌘V** in a text field or terminal pastes the path without opening Pesty.
-The original image formats stay on the clipboard for apps that paste images. Existing clipboard text is preserved.
-This happens on the next clipboard poll, normally within half a second; paused or excluded copies are not processed.
+Copy a screenshot in macshot (or another app) while Pesty is running. Pesty saves a local PNG without changing
+the clipboard, so normal **⌘V** in Slack and other image-capable apps pastes the image without an added file path.
+Original image formats, existing text, and other clipboard data are preserved. Automatic capture happens on the next
+clipboard poll, normally within half a second; paused or excluded copies are not processed.
 
 Open Pesty and press **⌘1–⌘9**, or select an image/file card and press **Return** or double-click it.
 These normal paste actions insert the full local path as text, without an extra modifier or a menu.

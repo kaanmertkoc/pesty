@@ -41,16 +41,18 @@ final class ScreenshotFolderTests: XCTestCase {
                                    screenshotDirectory: { folder })
         let data = try png()
         let source = pasteboard()
+        let monitor = ClipboardMonitor(pasteboard: source, store: store)
+        source.clearContents()
         source.setData(data, forType: .png)
         let change = source.changeCount
-        let item = try XCTUnwrap(ClipboardMonitor.captureImage(from: source, into: store))
-        store.addCaptured(item)
+        monitor.poll()
+        let item = try XCTUnwrap(store.history.first)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 1)
 
-        XCTAssertNotNil(ClipboardMonitor.addImagePath(for: item, to: source, store: store,
-                                                      ifUnchangedSince: change))
-        let path = try XCTUnwrap(source.string(forType: .string))
-        let exported = URL(fileURLWithPath: path)
+        XCTAssertEqual(source.changeCount, change)
+        XCTAssertNil(source.string(forType: .string))
+        let exported = try XCTUnwrap(store.imagePathURL(for: item))
+        let path = exported.path
         XCTAssertEqual(exported.deletingLastPathComponent().path, folder.path)
         XCTAssertTrue(exported.lastPathComponent.hasPrefix("Screenshot "))
         XCTAssertEqual(try Data(contentsOf: exported), data)
@@ -62,9 +64,11 @@ final class ScreenshotFolderTests: XCTestCase {
         for format: PasteFormat in [.filePath, .plainText] {
             PasteService.copy(item, format: format, to: destination, store: store)
             XCTAssertEqual(destination.string(forType: .string), path)
+            XCTAssertNil(destination.data(forType: .png))
         }
         PasteService.copy(item, format: .original, to: destination, store: store)
         XCTAssertEqual(destination.data(forType: .png), data)
+        XCTAssertNil(destination.string(forType: .string))
     }
 
     func testRepeatedCopyAndRelaunchReuseScreenshotAndHistoryCleanupKeepsIt() throws {

@@ -309,7 +309,7 @@ private struct ScreenshotFolderSettings: View {
             }
             Text(settings.screenshotFolderURL == nil
                  ? "Copied screenshots use Pesty’s history folder and can be removed when history is cleared. Choose a folder to keep permanent copies."
-                 : "Copied screenshots are saved here and their paths are copied automatically. Clearing Pesty’s history won’t delete these files. Existing history is exported when you copy its image paths.")
+                 : "Copied screenshots are saved here without adding path text to the clipboard. Use Pesty to copy a path. Clearing Pesty’s history won’t delete these files. Existing history is exported when you copy its image paths.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error = folderError ?? ClipboardStore.shared.screenshotExportError {
                 Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
